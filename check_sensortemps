@@ -1,0 +1,112 @@
+#!/bin/sh
+#
+# check_sensortemps 0.1.0 - Nagios plugin to check the value of temperature 
+# sensors using lm-sensors.
+# 
+# Copyright (C) 2012 Alex Bradley. This program comes with ABSOLUTELY NO
+# WARRANTY, and may be redistributed and/or modified under version 3 of the GNU
+# General Public License; please refer to the program source code or to the
+# LICENSE file distributed with the code for details.
+#
+
+. /usr/lib/nagios/plugins/utils.sh
+
+SENSORS=/usr/bin/sensors
+AWK=/usr/bin/awk
+DEFAULT_FILTER='coretemp-*'
+FILTER=$DEFAULT_FILTER
+ALARM_WARN=0
+
+printVersion () {
+   # Print this script's initial comment block.
+   $AWK '/^# / { print substr($0,3); } /^[^#]/ { exit }' $0
+}
+
+printUsage () {
+   printVersion
+   echo
+   /bin/cat <<EOF
+Usage: $(/usr/bin/basename $0) [ -a | -f <filter string> | -h | -V ]
+
+Uses the sensors(1) command from the lm-sensors project to check the value of 
+temperature sensors. Warning and critical thresholds are as provided by the 
+sensors themselves. If sensors(1) shows a sensor value of 0 with ALARM set, 
+$(/usr/bin/basename $0) will show that sensor's value as CRITICAL
+and return a "critical" status. (The sensor value has been observed to go to 0 
+on coretemp chips shortly after reaching the critical value.)
+
+Options:
+
+  -a  Always returns at least a "warning" status if any of the sensors examined
+      has its ALARM status set.
+  -f  Filter string passed to sensors(1) specifying sensor chips to use. 
+      To search for all chips, use '*-*'. Default: '$DEFAULT_FILTER'.
+  -h  Print this help text.
+  -V  Print the plugin version.
+EOF
+}
+
+while getopts "ahVf:" opt; do
+   case $opt in
+      h) printUsage; exit $STATE_OK ;;
+      V) printVersion; exit $STATE_OK ;;
+      f) FILTER=$OPTARG ;;
+      a) ALARM_WARN=1 ;;
+      *) printUsage; exit $STATE_UNKNOWN ;;
+   esac
+done   
+
+if [ ! -x $SENSORS ]; then
+   echo "UNKNOWN - Unable to execute $SENSORS."
+   exit $STATE_UNKNOWN
+fi
+
+# Ensure consistent sensors output (no degree signs)
+export LC_CTYPE=C
+
+$SENSORS -A "$FILTER" | $AWK -v alarmWarn=$ALARM_WARN -F '[:=,)]' '/^.*\: .* C/ { count++;
+    names[count] = $1; 
+    temps[count] = int($2);
+    warn[count] = int($3);
+    if (/^.*: .* C +\(high = .*, crit =/) {
+      crit[count] = int($5);
+      if ($6 ~ /ALARM/) {
+        alarm = 1;
+        alarms[count] = 1; 
+      }
+    } else if (/^.*: .* C +\(crit =/) {
+      crit[count] = int($3);
+      if ($4 ~ /ALARM/) {
+        alarm = 1;
+        alarms[count] = 1; 
+      }
+    }
+  }
+  END {
+    if (count == 0) {
+      print "UNKNOWN - No sensors found"
+      exit '$STATE_UNKNOWN'
+    }
+    status = "OK"; code = '$STATE_OK';
+    for (i = 1; i <= count; i++) {
+      msg = msg names[i] ": " ((temps[i] == 0 && alarms[i]) ? "CRITICAL" : temps[i] " C");
+      if (alarms[i]) {
+        msg = msg " (ALARM)"
+      }
+      # Remove spaces, etc. from name for performance data
+      gsub(/[^A-Za-z0-9]/, "", names[i]);
+      perfdata = sprintf("%s%s;%dC;%d;%d;0; ", perfdata, names[i],
+                              temps[i], warn[i], crit[i]);
+      if (i < count) { 
+        msg = msg ", " 
+      }
+      
+      if (temps[i] >= crit[i] || (temps[i] == 0 && alarms[i])) {
+        status = "CRITICAL"; code = '$STATE_CRITICAL';
+      } else if (status != "CRITICAL" && ((alarmWarn && alarm) || temps[i] >= warn[i])) {
+        status = "WARNING"; code = '$STATE_WARNING';
+      }
+    }
+    printf "%s - %s|%s\n", status, msg, perfdata;
+    exit code
+  }'
