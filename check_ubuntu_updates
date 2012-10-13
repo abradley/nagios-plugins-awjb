@@ -1,0 +1,69 @@
+#!/bin/sh
+#
+# check_ubuntu_updates 0.1.0 - Nagios plugin to check for packages available
+# for upgrade on Ubuntu systems.
+# 
+# Copyright (C) 2012 Alex Bradley. This program comes with ABSOLUTELY NO
+# WARRANTY, and may be redistributed and/or modified under version 3 of the GNU
+# General Public License; please refer to the program source code or to the
+# LICENSE file distributed with the code for details.
+#
+
+. /usr/lib/nagios/plugins/utils.sh
+
+APT_CHECK=/usr/lib/update-notifier/apt-check
+AWK=/usr/bin/awk
+
+printVersion () {
+   # Print this script's initial comment block.
+   $AWK '/^# / { print substr($0,3); } /^[^#]/ { exit }' $0
+}
+
+printUsage () {
+   printVersion
+   echo
+   /bin/cat <<EOF
+Usage: $(/usr/bin/basename $0) [ -h | -V ]
+
+The check_apt plugin provided with Nagios does not detect Ubuntu security 
+updates correctly (see Ubuntu bug 1031680). This plugin is intended as a 
+basic replacement for check_apt; it gives output in the same format, 
+although it does not accept most of the options provided by check_apt.
+
+This plugin depends on apt-check from the update-notifier-common package.
+
+Options:
+
+-h Print this help text.
+-V Print the plugin version.
+EOF
+}
+
+while getopts "hV" opt; do
+   case $opt in
+      h) printUsage; exit $STATE_OK ;;
+      V) printVersion; exit $STATE_OK ;;
+      *) printUsage; exit $STATE_UNKNOWN ;;
+   esac
+done 
+
+if [ ! -x $APT_CHECK ]; then
+   echo "APT UNKNOWN: Unable to execute $APT_CHECK."
+   exit $STATE_UNKNOWN
+fi
+
+$APT_CHECK 2>&1 | $AWK -F';' '{ upgrades = $1; security = $2 }
+  END {
+    if (security == "" || upgrades == "") {
+      print "APT UNKNOWN: Unable to parse output from apt-check.";
+      exit '$STATE_UNKNOWN'
+    } else if (security > 0) {
+      status = "CRITICAL"; code = '$STATE_CRITICAL';
+    } else if (upgrades > 0) {
+      status = "WARNING"; code = '$STATE_WARNING';
+    } else { 
+      status = "OK"; code = '$STATE_OK';
+    }
+    printf "APT %s: %d packages available for upgrade (%d critical updates).\n", status, upgrades, security;
+    exit code
+  }'
