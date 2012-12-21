@@ -52,7 +52,10 @@ if [ ! -x $APT_CHECK ]; then
    exit $STATE_UNKNOWN
 fi
 
-$APT_CHECK 2>&1 | $AWK -F';' '{ upgrades = $1; security = $2 }
+# Explicitly setting HOME works around a bug where a Python exception occurs 
+# (_getuserbase in /usr/lib/python2.7/sysconfig.py) if home directory cannot
+# be resolved, e.g. due to current uid not existing in a chroot's /etc/passwd.
+HOME=/var/lib/nagios $APT_CHECK 2>&1 | $AWK -F';' '{ upgrades = $1; security = $2 }
   END {
     if (security == "" || upgrades == "") {
       print "APT UNKNOWN: Unable to parse output from apt-check.";
